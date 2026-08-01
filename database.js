@@ -6,7 +6,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS doctors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    specialty TEXT NOT NULL
+    specialty TEXT NOT NULL,
+    password TEXT NOT NULL DEFAULT 'doctor123'
   );
 
   CREATE TABLE IF NOT EXISTS slots (
@@ -25,7 +26,24 @@ db.exec(`
     patient_contact TEXT NOT NULL,
     FOREIGN KEY (slot_id) REFERENCES slots(id)
   );
+  CREATE TABLE IF NOT EXISTS patients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL
+  );
 `);
+// Add password column if it doesn't already exist (for databases created before this update)
+try {
+  db.exec(`ALTER TABLE doctors ADD COLUMN password TEXT NOT NULL DEFAULT 'doctor123'`);
+} catch (e) {
+  // Column already exists, ignore
+}
+try {
+  db.exec(`ALTER TABLE bookings ADD COLUMN patient_id INTEGER`);
+} catch (e) {
+  // Column already exists, ignore
+}
 
 // Only add sample doctors if the table is empty
 const doctorCount = db.prepare('SELECT COUNT(*) as count FROM doctors').get();
