@@ -11,6 +11,7 @@ async function setup() {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       specialty TEXT NOT NULL,
+      email TEXT UNIQUE,
       password TEXT NOT NULL DEFAULT 'doctor123'
     );
 
@@ -38,20 +39,10 @@ async function setup() {
     );
   `);
 
-  const doctorCount = await pool.query('SELECT COUNT(*) FROM doctors');
-  if (parseInt(doctorCount.rows[0].count) === 0) {
-    const doc1 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Anjali Rao', 'Cardiologist']);
-    const doc2 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Vikram Shah', 'Dermatologist']);
-    const doc3 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Priya Nair', 'Pediatrician']);
-
-    const doctorIds = [doc1.rows[0].id, doc2.rows[0].id, doc3.rows[0].id];
-    const times = ['10:00 AM', '11:30 AM', '2:00 PM', '4:30 PM'];
-
-    for (const id of doctorIds) {
-      for (const time of times) {
-        await pool.query('INSERT INTO slots (doctor_id, date, time) VALUES ($1, $2, $3)', [id, '2026-08-05', time]);
-      }
-    }
+  try {
+    await pool.query(`ALTER TABLE doctors ADD COLUMN email TEXT UNIQUE`);
+  } catch (e) {
+    // Column already exists, ignore
   }
 }
 

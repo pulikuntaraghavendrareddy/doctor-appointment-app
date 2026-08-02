@@ -208,37 +208,7 @@ app.post('/admin/cancel/:bookingId', async (req, res) => {
   res.redirect(`/admin?password=${password}`);
 });
 
-// Doctor login page
-app.get('/doctor-login', async (req, res) => {
-  const result = await db.query('SELECT * FROM doctors');
-  const html = `
-    <h1>Doctor Login</h1>
-    <form method="POST" action="/doctor-login">
-      <label>Select Doctor:
-        <select name="doctorId">
-          ${result.rows.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
-        </select>
-      </label>
-      <label>Password: <input type="password" name="password" required></label>
-      <button type="submit">Login</button>
-    </form>
-  `;
-  res.send(layout('Doctor Login', html));
-});
 
-// Handle doctor login
-app.post('/doctor-login', async (req, res) => {
-  const { doctorId, password } = req.body;
-  const result = await db.query('SELECT * FROM doctors WHERE id = $1', [doctorId]);
-  const doctor = result.rows[0];
-
-  if (!doctor || doctor.password !== password) {
-    return res.send(layout('Login Failed', '<h1>Wrong password</h1><a href="/doctor-login">Try again</a>'));
-  }
-
-  req.session.doctorId = doctor.id;
-  res.redirect('/doctor-dashboard');
-});
 
 // Doctor dashboard: only their own bookings
 app.get('/doctor-dashboard', async (req, res) => {
@@ -257,7 +227,18 @@ app.get('/doctor-dashboard', async (req, res) => {
     ORDER BY slots.date, slots.time
   `, [req.session.doctorId]);
 
-  let html = `<h1>${doctor.name}'s Appointments</h1><table><tr><th>Patient</th><th>Contact</th><th>Date</th><th>Time</th></tr>`;
+  let html = `<h1>${doctor.name}'s Dashboard</h1>`;
+
+  html += `
+    <h2>Add a New Slot</h2>
+    <form method="POST" action="/doctor-dashboard/add-slot">
+      <label>Date: <input type="date" name="date" required></label>
+      <label>Time: <input type="text" name="time" placeholder="e.g. 10:00 AM" required></label>
+      <button type="submit">Add Slot</button>
+    </form>
+  `;
+
+  html += '<h2>Your Appointments</h2><table><tr><th>Patient</th><th>Contact</th><th>Date</th><th>Time</th></tr>';
   bookingsResult.rows.forEach(b => {
     html += `<tr><td>${b.patient_name}</td><td>${b.patient_contact}</td><td>${b.date}</td><td>${b.time}</td></tr>`;
   });
@@ -364,6 +345,82 @@ app.get('/my-bookings', async (req, res) => {
   res.send(layout('My Bookings', html));
 });
 
+// Doctor signup page
+app.get('/doctor-signup', (req, res) => {
+  const html = `
+    <h1>Doctor Signup</h1>
+    <form method="POST" action="/doctor-signup">
+      <label>Full Name: <input type="text" name="name" required></label>
+      <label>Specialty: <input type="text" name="specialty" required></label>
+      <label>Email: <input type="email" name="email" required></label>
+      <label>Password: <input type="password" name="password" required></label>
+      <button type="submit">Sign Up</button>
+    </form>
+    <p>Already have an account? <a href="/doctor-login">Log in</a></p>
+  `;
+  res.send(layout('Doctor Signup', html));
+});
+
+// Handle doctor signup
+app.post('/doctor-signup', async (req, res) => {
+  const { name, specialty, email, password } = req.body;
+
+  const existing = await db.query('SELECT * FROM doctors WHERE email = $1', [email]);
+  if (existing.rows[0]) {
+    return res.send(layout('Signup Failed', '<h1>Email already registered</h1><a href="/doctor-signup">Try again</a>'));
+  }
+
+  const hashedPassword = bcrypt.hashSync(password, 10);
+  const result = await db.query(
+    'INSERT INTO doctors (name, specialty, email, password) VALUES ($1, $2, $3, $4) RETURNING id',
+    [name, specialty, email, hashedPassword]
+  );
+
+  req.session.doctorId = result.rows[0].id;
+  res.redirect('/doctor-dashboard');
+});
+// Doctor login page
+app.get('/doctor-login', (req, res) => {
+  const html = `
+    <h1>Doctor Login</h1>
+    <form method="POST" action="/doctor-login">
+      <label>Email: <input type="email" name="email" required></label>
+      <label>Password: <input type="password" name="password" required></label>
+      <button type="submit">Log In</button>
+    </form>
+    <p>No account? <a href="/doctor-signup">Sign up</a></p>
+  `;
+  res.send(layout('Doctor Login', html));
+});
+
+// Handle doctor login
+app.post('/doctor-login', async (req, res) => {
+  const { email, password } = req.body;
+  const result = await db.query('SELECT * FROM doctors WHERE email = $1', [email]);
+  const doctor = result.rows[0];
+
+  if (!doctor || !bcrypt.compareSync(password, doctor.password)) {
+    return res.send(layout('Login Failed', '<h1>Wrong email or password</h1><a href="/doctor-login">Try again</a>'));
+  }
+
+  req.session.doctorId = doctor.id;
+  res.redirect('/doctor-dashboard');
+});
+// Doctor adds a new slot
+app.post('/doctor-dashboard/add-slot', async (req, res) => {
+  if (!req.session.doctorId) {
+    return res.redirect('/doctor-login');
+  }
+
+  const { date, time } = req.body;
+
+  await db.query(
+    'INSERT INTO slots (doctor_id, date, time) VALUES ($1, $2, $3)',
+    [req.session.doctorId, date, time]
+  );
+
+  res.redirect('/doctor-dashboard');
+});
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
