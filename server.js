@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const db = require('./database');
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -37,10 +37,11 @@ app.use(session({
   resave: false,
   saveUninitialized: false
 }));
-// Homepage: list all doctors
 
-app.get('/', (req, res) => {
-  const doctors = db.prepare('SELECT * FROM doctors').all();
+// Homepage: list all doctors
+app.get('/', async (req, res) => {
+  const result = await db.query('SELECT * FROM doctors');
+  const doctors = result.rows;
 
   let nav = '<p>';
   if (req.session.patientId) {
@@ -58,16 +59,19 @@ app.get('/', (req, res) => {
 
   res.send(layout('Doctor Appointments', html));
 });
+
 // Doctor detail page: show their available slots
-app.get('/doctor/:id', (req, res) => {
+app.get('/doctor/:id', async (req, res) => {
   const doctorId = req.params.id;
-  const doctor = db.prepare('SELECT * FROM doctors WHERE id = ?').get(doctorId);
+  const doctorResult = await db.query('SELECT * FROM doctors WHERE id = $1', [doctorId]);
+  const doctor = doctorResult.rows[0];
 
   if (!doctor) {
     return res.send(layout('Not Found', '<h1>Doctor not found</h1><a href="/">Back to home</a>'));
   }
 
-  const slots = db.prepare('SELECT * FROM slots WHERE doctor_id = ? AND is_booked = 0').all(doctorId);
+  const slotsResult = await db.query('SELECT * FROM slots WHERE doctor_id = $1 AND is_booked = 0', [doctorId]);
+  const slots = slotsResult.rows;
 
   let html = `<h1>${doctor.name} — ${doctor.specialty}</h1>`;
   html += '<h2>Available Slots</h2><ul>';
@@ -80,14 +84,15 @@ app.get('/doctor/:id', (req, res) => {
 });
 
 // Show booking form for a specific slot
-app.get('/book/:id', (req, res) => {
+app.get('/book/:id', async (req, res) => {
   const slotId = req.params.id;
-  const slot = db.prepare(`
+  const result = await db.query(`
     SELECT slots.*, doctors.name AS doctor_name
     FROM slots
     JOIN doctors ON slots.doctor_id = doctors.id
-    WHERE slots.id = ?
-  `).get(slotId);
+    WHERE slots.id = $1
+  `, [slotId]);
+  const slot = result.rows[0];
 
   if (!slot || slot.is_booked) {
     return res.send(layout('Unavailable', '<h1>Sorry, this slot is unavailable</h1><a href="/">Back to home</a>'));
@@ -106,27 +111,33 @@ app.get('/book/:id', (req, res) => {
 });
 
 // Handle the form submission
-app.post('/book/:id', (req, res) => {
+app.post('/book/:id', async (req, res) => {
   const slotId = req.params.id;
   const { patient_name, patient_contact } = req.body;
 
-  const slot = db.prepare('SELECT * FROM slots WHERE id = ?').get(slotId);
+  const slotResult = await db.query('SELECT * FROM slots WHERE id = $1', [slotId]);
+  const slot = slotResult.rows[0];
   if (!slot || slot.is_booked) {
     return res.send(layout('Unavailable', '<h1>Sorry, this slot is unavailable</h1><a href="/">Back to home</a>'));
   }
 
   const patientId = req.session.patientId || null;
-db.prepare('INSERT INTO bookings (slot_id, patient_name, patient_contact, patient_id) VALUES (?, ?, ?, ?)')
-    .run(slotId, patient_name, patient_contact, patientId);
- db.prepare('UPDATE slots SET is_booked = 1 WHERE id = ?').run(slotId);
+  await db.query(
+    'INSERT INTO bookings (slot_id, patient_name, patient_contact, patient_id) VALUES ($1, $2, $3, $4)',
+    [slotId, patient_name, patient_contact, patientId]
+  );
 
-  // Send confirmation email (only if patient_contact looks like an email)
+  await db.query('UPDATE slots SET is_booked = 1 WHERE id = $1', [slotId]);
+
+  const doctorResult = await db.query('SELECT name FROM doctors WHERE id = $1', [slot.doctor_id]);
+  const doctorName = doctorResult.rows[0].name;
+
   if (patient_contact.includes('@')) {
     transporter.sendMail({
       from: process.env.GMAIL_USER,
       to: patient_contact,
       subject: 'Appointment Confirmed',
-      text: `Hi ${patient_name},\n\nYour appointment with ${slot.doctor_name} on ${slot.date} at ${slot.time} is confirmed.\n\nThanks!`
+      text: `Hi ${patient_name},\n\nYour appointment with ${doctorName} on ${slot.date} at ${slot.time} is confirmed.\n\nThanks!`
     }).catch(err => console.log('Email failed to send:', err.message));
   }
 
@@ -139,7 +150,7 @@ db.prepare('INSERT INTO bookings (slot_id, patient_name, patient_contact, patien
 });
 
 // Admin page: view all bookings
-app.get('/admin', (req, res) => {
+app.get('/admin', async (req, res) => {
   const password = req.query.password;
 
   if (password !== 'admin123') {
@@ -153,29 +164,31 @@ app.get('/admin', (req, res) => {
     return res.send(layout('Admin Login', loginForm));
   }
 
-  const bookings = db.prepare(`
+  const result = await db.query(`
     SELECT bookings.*, slots.date, slots.time, doctors.name AS doctor_name
     FROM bookings
     JOIN slots ON bookings.slot_id = slots.id
     JOIN doctors ON slots.doctor_id = doctors.id
     ORDER BY slots.date, slots.time
-  `).all();
+  `);
+  const bookings = result.rows;
 
   let html = '<h1>All Bookings (Admin)</h1><table><tr><th>Patient</th><th>Contact</th><th>Doctor</th><th>Date</th><th>Time</th><th>Action</th></tr>';
   bookings.forEach(b => {
     html += `<tr><td>${b.patient_name}</td><td>${b.patient_contact}</td><td>${b.doctor_name}</td><td>${b.date}</td><td>${b.time}</td><td>
-  <form method="POST" action="/admin/cancel/${b.id}" style="margin:0">
-    <input type="hidden" name="password" value="${password}">
-    <button type="submit" onclick="return confirm('Cancel this booking?')">Cancel</button>
-  </form>
-</td></tr>`;
+      <form method="POST" action="/admin/cancel/${b.id}" style="margin:0">
+        <input type="hidden" name="password" value="${password}">
+        <button type="submit" onclick="return confirm('Cancel this booking?')">Cancel</button>
+      </form>
+    </td></tr>`;
   });
   html += '</table><br><a href="/">Back to home</a>';
 
   res.send(layout('Admin', html));
 });
+
 // Cancel a booking
-app.post('/admin/cancel/:bookingId', (req, res) => {
+app.post('/admin/cancel/:bookingId', async (req, res) => {
   const bookingId = req.params.bookingId;
   const password = req.body.password;
 
@@ -183,26 +196,27 @@ app.post('/admin/cancel/:bookingId', (req, res) => {
     return res.send('<h1>Not authorized</h1><a href="/admin">Back to admin</a>');
   }
 
-  const booking = db.prepare('SELECT * FROM bookings WHERE id = ?').get(bookingId);
+  const bookingResult = await db.query('SELECT * FROM bookings WHERE id = $1', [bookingId]);
+  const booking = bookingResult.rows[0];
   if (!booking) {
     return res.send('<h1>Booking not found</h1><a href="/admin">Back to admin</a>');
   }
 
-  // Free up the slot again
-  db.prepare('UPDATE slots SET is_booked = 0 WHERE id = ?').run(booking.slot_id);
-  // Remove the booking
-  db.prepare('DELETE FROM bookings WHERE id = ?').run(bookingId);
+  await db.query('UPDATE slots SET is_booked = 0 WHERE id = $1', [booking.slot_id]);
+  await db.query('DELETE FROM bookings WHERE id = $1', [bookingId]);
 
   res.redirect(`/admin?password=${password}`);
 });
+
 // Doctor login page
-app.get('/doctor-login', (req, res) => {
+app.get('/doctor-login', async (req, res) => {
+  const result = await db.query('SELECT * FROM doctors');
   const html = `
     <h1>Doctor Login</h1>
     <form method="POST" action="/doctor-login">
       <label>Select Doctor:
         <select name="doctorId">
-          ${db.prepare('SELECT * FROM doctors').all().map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
+          ${result.rows.map(d => `<option value="${d.id}">${d.name}</option>`).join('')}
         </select>
       </label>
       <label>Password: <input type="password" name="password" required></label>
@@ -213,9 +227,10 @@ app.get('/doctor-login', (req, res) => {
 });
 
 // Handle doctor login
-app.post('/doctor-login', (req, res) => {
+app.post('/doctor-login', async (req, res) => {
   const { doctorId, password } = req.body;
-  const doctor = db.prepare('SELECT * FROM doctors WHERE id = ?').get(doctorId);
+  const result = await db.query('SELECT * FROM doctors WHERE id = $1', [doctorId]);
+  const doctor = result.rows[0];
 
   if (!doctor || doctor.password !== password) {
     return res.send(layout('Login Failed', '<h1>Wrong password</h1><a href="/doctor-login">Try again</a>'));
@@ -226,23 +241,24 @@ app.post('/doctor-login', (req, res) => {
 });
 
 // Doctor dashboard: only their own bookings
-app.get('/doctor-dashboard', (req, res) => {
+app.get('/doctor-dashboard', async (req, res) => {
   if (!req.session.doctorId) {
     return res.redirect('/doctor-login');
   }
 
-  const doctor = db.prepare('SELECT * FROM doctors WHERE id = ?').get(req.session.doctorId);
+  const doctorResult = await db.query('SELECT * FROM doctors WHERE id = $1', [req.session.doctorId]);
+  const doctor = doctorResult.rows[0];
 
-  const bookings = db.prepare(`
+  const bookingsResult = await db.query(`
     SELECT bookings.*, slots.date, slots.time
     FROM bookings
     JOIN slots ON bookings.slot_id = slots.id
-    WHERE slots.doctor_id = ?
+    WHERE slots.doctor_id = $1
     ORDER BY slots.date, slots.time
-  `).all(req.session.doctorId);
+  `, [req.session.doctorId]);
 
   let html = `<h1>${doctor.name}'s Appointments</h1><table><tr><th>Patient</th><th>Contact</th><th>Date</th><th>Time</th></tr>`;
-  bookings.forEach(b => {
+  bookingsResult.rows.forEach(b => {
     html += `<tr><td>${b.patient_name}</td><td>${b.patient_contact}</td><td>${b.date}</td><td>${b.time}</td></tr>`;
   });
   html += '</table><br><a href="/doctor-logout">Logout</a>';
@@ -255,6 +271,7 @@ app.get('/doctor-logout', (req, res) => {
   req.session.doctorId = null;
   res.redirect('/doctor-login');
 });
+
 // Patient signup page
 app.get('/signup', (req, res) => {
   const html = `
@@ -271,18 +288,21 @@ app.get('/signup', (req, res) => {
 });
 
 // Handle signup
-app.post('/signup', (req, res) => {
+app.post('/signup', async (req, res) => {
   const { name, email, password } = req.body;
 
-  const existing = db.prepare('SELECT * FROM patients WHERE email = ?').get(email);
-  if (existing) {
+  const existingResult = await db.query('SELECT * FROM patients WHERE email = $1', [email]);
+  if (existingResult.rows[0]) {
     return res.send(layout('Signup Failed', '<h1>Email already registered</h1><a href="/signup">Try again</a>'));
   }
 
   const hashedPassword = bcrypt.hashSync(password, 10);
-  const result = db.prepare('INSERT INTO patients (name, email, password) VALUES (?, ?, ?)').run(name, email, hashedPassword);
+  const result = await db.query(
+    'INSERT INTO patients (name, email, password) VALUES ($1, $2, $3) RETURNING id',
+    [name, email, hashedPassword]
+  );
 
-  req.session.patientId = result.lastInsertRowid;
+  req.session.patientId = result.rows[0].id;
   res.redirect('/');
 });
 
@@ -301,9 +321,10 @@ app.get('/login', (req, res) => {
 });
 
 // Handle login
-app.post('/login', (req, res) => {
+app.post('/login', async (req, res) => {
   const { email, password } = req.body;
-  const patient = db.prepare('SELECT * FROM patients WHERE email = ?').get(email);
+  const result = await db.query('SELECT * FROM patients WHERE email = $1', [email]);
+  const patient = result.rows[0];
 
   if (!patient || !bcrypt.compareSync(password, patient.password)) {
     return res.send(layout('Login Failed', '<h1>Wrong email or password</h1><a href="/login">Try again</a>'));
@@ -320,28 +341,29 @@ app.get('/logout', (req, res) => {
 });
 
 // My Bookings page
-app.get('/my-bookings', (req, res) => {
+app.get('/my-bookings', async (req, res) => {
   if (!req.session.patientId) {
     return res.redirect('/login');
   }
 
-  const bookings = db.prepare(`
+  const result = await db.query(`
     SELECT bookings.*, slots.date, slots.time, doctors.name AS doctor_name
     FROM bookings
     JOIN slots ON bookings.slot_id = slots.id
     JOIN doctors ON slots.doctor_id = doctors.id
-    WHERE bookings.patient_id = ?
+    WHERE bookings.patient_id = $1
     ORDER BY slots.date, slots.time
-  `).all(req.session.patientId);
+  `, [req.session.patientId]);
 
   let html = '<h1>My Bookings</h1><table><tr><th>Doctor</th><th>Date</th><th>Time</th></tr>';
-  bookings.forEach(b => {
+  result.rows.forEach(b => {
     html += `<tr><td>${b.doctor_name}</td><td>${b.date}</td><td>${b.time}</td></tr>`;
   });
   html += '</table><br><a href="/">Back to home</a>';
 
   res.send(layout('My Bookings', html));
 });
+
 app.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });

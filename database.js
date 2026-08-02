@@ -1,67 +1,60 @@
-const Database = require('better-sqlite3');
-const db = new Database('appointments.db');
+const { Pool } = require('pg');
 
-// Create tables if they don't already exist
-db.exec(`
-  CREATE TABLE IF NOT EXISTS doctors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    specialty TEXT NOT NULL,
-    password TEXT NOT NULL DEFAULT 'doctor123'
-  );
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-  CREATE TABLE IF NOT EXISTS slots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    doctor_id INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    time TEXT NOT NULL,
-    is_booked INTEGER DEFAULT 0,
-    FOREIGN KEY (doctor_id) REFERENCES doctors(id)
-  );
+async function setup() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS doctors (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      specialty TEXT NOT NULL,
+      password TEXT NOT NULL DEFAULT 'doctor123'
+    );
 
-  CREATE TABLE IF NOT EXISTS bookings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    slot_id INTEGER NOT NULL,
-    patient_name TEXT NOT NULL,
-    patient_contact TEXT NOT NULL,
-    FOREIGN KEY (slot_id) REFERENCES slots(id)
-  );
-  CREATE TABLE IF NOT EXISTS patients (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
-  );
-`);
-// Add password column if it doesn't already exist (for databases created before this update)
-try {
-  db.exec(`ALTER TABLE doctors ADD COLUMN password TEXT NOT NULL DEFAULT 'doctor123'`);
-} catch (e) {
-  // Column already exists, ignore
-}
-try {
-  db.exec(`ALTER TABLE bookings ADD COLUMN patient_id INTEGER`);
-} catch (e) {
-  // Column already exists, ignore
-}
+    CREATE TABLE IF NOT EXISTS slots (
+      id SERIAL PRIMARY KEY,
+      doctor_id INTEGER NOT NULL REFERENCES doctors(id),
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      is_booked INTEGER DEFAULT 0
+    );
 
-// Only add sample doctors if the table is empty
-const doctorCount = db.prepare('SELECT COUNT(*) as count FROM doctors').get();
-if (doctorCount.count === 0) {
-  const insertDoctor = db.prepare('INSERT INTO doctors (name, specialty) VALUES (?, ?)');
-  const doc1 = insertDoctor.run('Dr. Anjali Rao', 'Cardiologist');
-  const doc2 = insertDoctor.run('Dr. Vikram Shah', 'Dermatologist');
-  const doc3 = insertDoctor.run('Dr. Priya Nair', 'Pediatrician');
+    CREATE TABLE IF NOT EXISTS bookings (
+      id SERIAL PRIMARY KEY,
+      slot_id INTEGER NOT NULL REFERENCES slots(id),
+      patient_name TEXT NOT NULL,
+      patient_contact TEXT NOT NULL,
+      patient_id INTEGER
+    );
 
-  const insertSlot = db.prepare('INSERT INTO slots (doctor_id, date, time) VALUES (?, ?, ?)');
-  const doctorIds = [doc1.lastInsertRowid, doc2.lastInsertRowid, doc3.lastInsertRowid];
-  const times = ['10:00 AM', '11:30 AM', '2:00 PM', '4:30 PM'];
+    CREATE TABLE IF NOT EXISTS patients (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL
+    );
+  `);
 
-  doctorIds.forEach(id => {
-    times.forEach(time => {
-      insertSlot.run(id, '2026-08-05', time);
-    });
-  });
+  const doctorCount = await pool.query('SELECT COUNT(*) FROM doctors');
+  if (parseInt(doctorCount.rows[0].count) === 0) {
+    const doc1 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Anjali Rao', 'Cardiologist']);
+    const doc2 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Vikram Shah', 'Dermatologist']);
+    const doc3 = await pool.query(`INSERT INTO doctors (name, specialty) VALUES ($1, $2) RETURNING id`, ['Dr. Priya Nair', 'Pediatrician']);
+
+    const doctorIds = [doc1.rows[0].id, doc2.rows[0].id, doc3.rows[0].id];
+    const times = ['10:00 AM', '11:30 AM', '2:00 PM', '4:30 PM'];
+
+    for (const id of doctorIds) {
+      for (const time of times) {
+        await pool.query('INSERT INTO slots (doctor_id, date, time) VALUES ($1, $2, $3)', [id, '2026-08-05', time]);
+      }
+    }
+  }
 }
 
-module.exports = db;
+setup();
+
+module.exports = pool;
